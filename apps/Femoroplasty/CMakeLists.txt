@@ -1,0 +1,3 @@
+add_subdirectory(injection_device_registration)
+add_subdirectory(pelvis_femur_registration)
+add_subdirectory(pre_processing)
