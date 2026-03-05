@@ -24,15 +24,17 @@
 
 #include "xregBasicStats.h"
 
+#include <cmath>
+
 xreg::CoordScalar xreg::SampleMean(const CoordScalarList& x)
 {
-  CoordScalar sum = 0;
+  CoordScalar sum = CoordScalar(0);
 
   for (const auto& s : x)
   {
     sum += s;
   }
-  
+
   return sum / x.size();
 }
 
@@ -43,13 +45,13 @@ xreg::CoordScalar xreg::SampleStdDev(const CoordScalarList& x)
 
 xreg::CoordScalar xreg::SampleStdDev(const CoordScalarList& x, const CoordScalar sample_mean)
 {
-  CoordScalar sum = 0;
+  CoordScalar sum = CoordScalar(0);
   
   const size_type N = x.size();
 
   if (N > 1)
   {
-    CoordScalar tmp = 0;
+    CoordScalar tmp = CoordScalar(0);
 
     for (size_type i = 0; i < N; ++i)
     {
@@ -58,7 +60,7 @@ xreg::CoordScalar xreg::SampleStdDev(const CoordScalarList& x, const CoordScalar
       sum += tmp * tmp;
     }
 
-    sum = std::sqrt(sum / (N - 1));
+    sum = std::sqrt(sum / static_cast<CoordScalar>(N - 1));
   }
   
   return sum;
@@ -70,4 +72,3 @@ std::tuple<xreg::CoordScalar,xreg::CoordScalar> xreg::SampleMeanAndStdDev(const 
 
   return std::make_tuple(sample_mean, SampleStdDev(x, sample_mean));
 }
-
