@@ -24,43 +24,56 @@
 
 #include "xregBasicStats.h"
 
+namespace {
+  // MISRA C++ compliant: Named constants instead of magic numbers
+  constexpr xreg::CoordScalar kZero = 0.0;
+  constexpr xreg::size_type kMinSampleCount = 1U;
+}
+
 xreg::CoordScalar xreg::SampleMean(const CoordScalarList& x)
 {
-  CoordScalar sum = 0;
+  CoordScalar sum = kZero;
 
   for (const auto& s : x)
   {
     sum += s;
   }
-  
+
   return sum / x.size();
 }
 
 xreg::CoordScalar xreg::SampleStdDev(const CoordScalarList& x)
 {
-  return (x.size() > 1) ? SampleStdDev(x, SampleMean(x)) : CoordScalar(0);
+  // MISRA M3: Explicit bool conversion for controlling expression
+  // MISRA R9: Single exit point
+  CoordScalar result = kZero;
+
+  if (static_cast<bool>(x.size() > kMinSampleCount))
+  {
+    result = SampleStdDev(x, SampleMean(x));
+  }
+
+  return result;
 }
 
 xreg::CoordScalar xreg::SampleStdDev(const CoordScalarList& x, const CoordScalar sample_mean)
 {
-  CoordScalar sum = 0;
-  
+  CoordScalar sum = kZero;
+
   const size_type N = x.size();
 
-  if (N > 1)
+  if (static_cast<bool>(N > kMinSampleCount))
   {
-    CoordScalar tmp = 0;
-
-    for (size_type i = 0; i < N; ++i)
+    for (size_type i = kZero; i < N; ++i)
     {
-      tmp = x[i] - sample_mean;
-
+      // MISRA R1: Declare tmp inside loop as const
+      const CoordScalar tmp = x[i] - sample_mean;
       sum += tmp * tmp;
     }
 
-    sum = std::sqrt(sum / (N - 1));
+    sum = std::sqrt(sum / (N - kMinSampleCount));
   }
-  
+
   return sum;
 }
 
@@ -70,4 +83,3 @@ std::tuple<xreg::CoordScalar,xreg::CoordScalar> xreg::SampleMeanAndStdDev(const 
 
   return std::make_tuple(sample_mean, SampleStdDev(x, sample_mean));
 }
-
