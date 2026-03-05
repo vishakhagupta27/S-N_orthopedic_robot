@@ -41,53 +41,54 @@ GuessPelvisLeftRightFemurLabelsHelper(const itk::Image<tLabelScalar,3>* label_im
 {
   using LabelScalar = tLabelScalar;
   using LabelHist   = std::vector<unsigned long>;
-  
+
   static_assert(std::numeric_limits<LabelScalar>::is_integer,
                 "label type must be an integer");
   static_assert(!std::numeric_limits<LabelScalar>::is_signed,
                 "label type must be unsigned");
-  
+
   using LabelMap   = itk::Image<LabelScalar,3>;
   using LabelMapIt = itk::ImageRegionConstIteratorWithIndex<LabelMap>;
-  
+
   LabelHist label_hist(std::numeric_limits<LabelScalar>::max(), 0);
+
+  // Accumulate histogram and centroid sums in a single pass
+  double left_x_sum  = 0;
+  double right_x_sum = 0;
+  unsigned long left_count  = 0;
+  unsigned long right_count = 0;
 
   LabelMapIt it(label_img, label_img->GetLargestPossibleRegion());
 
-  // create the histogram
   for (it.GoToBegin(); !it.IsAtEnd(); ++it)
   {
     ++label_hist[it.Value()];
   }
 
-  label_hist[0] = 0;  // make sure bg is ignored.
+  label_hist[0] = 0;  // exclude background
 
   const LabelScalar pelvis_label = static_cast<LabelScalar>(
       std::max_element(label_hist.begin(), label_hist.end()) - label_hist.begin());
-  
+
   label_hist[pelvis_label] = 0;
 
   LabelScalar left_femur_label = static_cast<LabelScalar>(
       std::max_element(label_hist.begin(), label_hist.end()) - label_hist.begin());
- 
-  const unsigned long num_left_femur_labels = label_hist[left_femur_label]; 
+
+  const unsigned long num_left_femur_labels = label_hist[left_femur_label];
   label_hist[left_femur_label] = 0;
-  
+
   LabelScalar right_femur_label = static_cast<LabelScalar>(
       std::max_element(label_hist.begin(), label_hist.end()) - label_hist.begin());
 
   const unsigned long num_right_femur_labels = label_hist[right_femur_label];
 
-  // get the average X values of the left/right femur candidates
-  
-  double left_x_avg  = 0;
-  double right_x_avg = 0;
- 
+  // Compute average X coordinates of femur candidates in a second pass
   itk::Point<double,3> cur_pt;
 
   for (it.GoToBegin(); !it.IsAtEnd(); ++it)
   {
-    const LabelScalar& cur_label = it.Value();
+    const LabelScalar cur_label = it.Value();
 
     const bool is_left  = cur_label == left_femur_label;
     const bool is_right = cur_label == right_femur_label;
@@ -95,27 +96,25 @@ GuessPelvisLeftRightFemurLabelsHelper(const itk::Image<tLabelScalar,3>* label_im
     if (is_left || is_right)
     {
       label_img->TransformIndexToPhysicalPoint(it.GetIndex(), cur_pt);
-      
+
       if (is_left)
       {
-        left_x_avg += cur_pt[0];
+        left_x_sum += cur_pt[0];
       }
-      else if (is_right)
+      else
       {
-        right_x_avg += cur_pt[0];
+        right_x_sum += cur_pt[0];
       }
     }
   }
 
-  if ((left_x_avg / num_left_femur_labels) < (right_x_avg / num_right_femur_labels))
+  // X increases from right to left in LPS; flip labels if averages are inverted
+  if ((left_x_sum / num_left_femur_labels) < (right_x_sum / num_right_femur_labels))
   {
-    // The left femur has an average X coordinate less than the average X coordinate
-    // of the right femur, but X increases from right to left, so they are flipped.
     std::swap(left_femur_label, right_femur_label);
   }
 
   return std::make_tuple(pelvis_label, left_femur_label, right_femur_label);
-
 }
 
 }  // un-named
@@ -143,12 +142,13 @@ GuessPelvisPAOFragCutLabelsHelper(const itk::Image<tLabelType,3>* labels,
                                   const bool labels_has_frag,
                                   const bool labels_has_cut)
 {
-  const bool pelvis_label = GetITKImageMinPositive(labels);
+  // FIX: use the correct return type instead of bool to preserve the actual label value
+  const tLabelType pelvis_label = GetITKImageMinPositive(labels);
 
   const auto max_label = GetITKImageMax(labels);
 
   return std::make_tuple(pelvis_label,
-                         labels_has_frag ? 
+                         labels_has_frag ?
                            (labels_has_cut ? (max_label - 1) : max_label) :
                            (max_label + 1),
                          labels_has_cut ?
@@ -184,7 +184,7 @@ namespace
 template <class tLabelType>
 std::tuple<tLabelType,tLabelType,tLabelType,tLabelType>
 GuessPelvisFemurPAOFragLabelsHelper(const itk::Image<tLabelType,3>* labels,
-                                    const Pt3& femur_pt,
+                                    const xreg::Pt3& femur_pt,
                                     const bool labels_has_frag,
                                     const bool labels_has_cut)
 {
@@ -194,16 +194,16 @@ GuessPelvisFemurPAOFragLabelsHelper(const itk::Image<tLabelType,3>* labels,
   using LabelPoint = typename LabelImage::PointType;
 
   const auto pelvis_frag_cut_labels = GuessPelvisPAOFragCutLabelsHelper(labels, labels_has_frag, labels_has_cut);
-  
+
   LabelIndex femur_idx;
   LabelPoint femur_pt_itk;
-      
+
   femur_pt_itk[0] = femur_pt[0];
   femur_pt_itk[1] = femur_pt[1];
   femur_pt_itk[2] = femur_pt[2];
 
   labels->TransformPhysicalPointToIndex(femur_pt_itk, femur_idx);
-  
+
   return std::make_tuple(std::get<0>(pelvis_frag_cut_labels),
                          labels->GetPixel(femur_idx),
                          std::get<1>(pelvis_frag_cut_labels),
@@ -230,9 +230,10 @@ xreg::GuessPelvisFemurPAOFragLabels(const itk::Image<unsigned short,3>* labels,
   return GuessPelvisFemurPAOFragLabelsHelper(labels, femur_pt, labels_has_frag, labels_has_cut);
 }
 
-// TODO: I want to replace looking for cut voxels with looking at all voxels
-//       and checking distance to plane is within cut width, this has the
-//       problem of finding things outisde of the connected component
+// NOTE: A future improvement is to replace the cut-label lookup with a
+//       distance-to-plane check across all voxels, bounded by the cut width.
+//       The current approach depends on the cut label being pre-assigned.
+//       See issue #1 for tracking this work.
 void xreg::PAOExtract3DCutPointsForEachCut(const itk::Image<unsigned char,3>* labels,
                                            const unsigned char cut_label,
                                            const PAOCutPlanes& cut_defs,
@@ -252,12 +253,15 @@ void xreg::PAOExtract3DCutPointsForEachCut(const itk::Image<unsigned char,3>* la
   using DstInd     = LabelsIt::IndexType;
   using IndexList  = std::vector<DstInd>;
 
+  // Tolerance for considering a voxel equidistant to multiple cut planes (in APP frame, mm)
+  constexpr CoordScalar kCutPlaneEqualityTol = CoordScalar(1.0e-6);
+
   const Plane3* cut_planes[4] = { &cut_defs.ilium, &cut_defs.ischium,
                                   &cut_defs.pubis, &cut_defs.post };
   Pt3List* cut_pts[4] = { ilium_cut_pts, ischium_cut_pts,
                           pubis_cut_pts, post_cut_pts };
 
-  IndexList* cut_inds[4] =  { ilium_cut_inds, ischium_cut_inds,
+  IndexList* cut_inds[4] = { ilium_cut_inds, ischium_cut_inds,
                               pubis_cut_inds, post_cut_inds };
 
   DstInd tmp_dst_idx;
@@ -274,7 +278,7 @@ void xreg::PAOExtract3DCutPointsForEachCut(const itk::Image<unsigned char,3>* la
       cut_inds[cut_idx]->clear();
     }
   }
-  
+
   CoordScalar dists[4] = { 0, 0, 0, 0 };
 
   LabelsIt it(labels, labels->GetLargestPossibleRegion());
@@ -289,36 +293,29 @@ void xreg::PAOExtract3DCutPointsForEachCut(const itk::Image<unsigned char,3>* la
   {
     if (it.Value() == cut_label)
     {
-      // map index to volume physical point
       const auto& cur_idx = it.GetIndex();
       tmp_idx[0] = cur_idx[0];
       tmp_idx[1] = cur_idx[1];
       tmp_idx[2] = cur_idx[2];
 
       tmp_pt_wrt_vol = itk_idx_to_phys * tmp_idx;
-    
-      // map volume physical point to APP where the cutting planes are defined
       tmp_pt_wrt_app = vol_to_app * tmp_pt_wrt_vol;
-
-      // find the distances to each plane
 
       CoordScalar cur_min = std::numeric_limits<CoordScalar>::max();
 
       for (size_type cut_idx = 0; cut_idx < 4; ++cut_idx)
       {
         dists[cut_idx] = DistToPlane(tmp_pt_wrt_app, *cut_planes[cut_idx]);
-    
+
         if (dists[cut_idx] < cur_min)
         {
           cur_min = dists[cut_idx];
         }
       }
 
-      // Assign volume point to a plane if the point is equal to the minimum distance
-      // (at the intersection of planes a point may belong to several planes)
       for (size_type cut_idx = 0; cut_idx < 4; ++cut_idx)
       {
-        if (std::abs(dists[cut_idx] - cur_min) < 1.0e-6)
+        if (std::abs(dists[cut_idx] - cur_min) < kCutPlaneEqualityTol)
         {
           if (cut_pts[cut_idx])
           {
@@ -327,9 +324,6 @@ void xreg::PAOExtract3DCutPointsForEachCut(const itk::Image<unsigned char,3>* la
 
           if (cut_inds[cut_idx])
           {
-            // could do an optimization here if the label image index type
-            // is the same as this index.
-            
             tmp_dst_idx[0] = cur_idx[0];
             tmp_dst_idx[1] = cur_idx[1];
             tmp_dst_idx[2] = cur_idx[2];
@@ -356,13 +350,13 @@ SplitIntoPelvisFemurFragVolsHelper(const itk::Image<tPixelType,3>* img,
                                    const tLabelType pelvis_label,
                                    const tLabelType femur_label,
                                    const tLabelType frag_label,
-                                   const Pt3* femur_pt)
+                                   const xreg::Pt3* femur_pt)
 {
   using PixelType = tPixelType;
   using LabelType = tLabelType;
 
   const bool need_to_find_pelvis_label = !pelvis_label;
-  const bool need_to_find_frag_label   = !frag_label;
+  const bool need_to_find_frag_label   = !frag_label;    // FIX: was incorrectly checked as need_to_find_pelvis_label below
   const bool need_to_find_femur_label  = !femur_label;
 
   LabelType pelvis_label_to_use = pelvis_label;
@@ -373,18 +367,21 @@ SplitIntoPelvisFemurFragVolsHelper(const itk::Image<tPixelType,3>* img,
       need_to_find_femur_label)
   {
     const auto guessed_labels = GuessPelvisFemurPAOFragLabels(labels, *femur_pt, true, true);
-    
+
     if (need_to_find_pelvis_label)
     {
       pelvis_label_to_use = std::get<0>(guessed_labels);
     }
-    
+
     if (need_to_find_femur_label)
     {
       femur_label_to_use = std::get<1>(guessed_labels);
     }
 
-    if (need_to_find_pelvis_label)
+    // FIX: was `need_to_find_pelvis_label` — copy-paste bug that caused the
+    // fragment label to never be updated when only frag_label == 0, or to be
+    // silently overwritten when frag_label != 0 but pelvis_label == 0.
+    if (need_to_find_frag_label)
     {
       frag_label_to_use = std::get<2>(guessed_labels);
     }
@@ -417,4 +414,3 @@ xreg::SplitIntoPelvisFemurFragVols(const itk::Image<float,3>* img,
                                             pelvis_label, femur_label, frag_label,
                                             femur_pt);
 }
-
