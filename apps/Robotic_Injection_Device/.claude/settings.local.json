@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for f in *.cpp)",
+      "Bash(do echo \"=== $f ===\")",
+      "Read(//c/Users/devgoel/S-N_orthopedic_robot/apps/Robotic_Injection_Device/**)",
+      "Bash(done)",
+      "Bash(dir C:\\\\Users\\\\devgoel\\\\S-N_orthopedic_robot\\\\apps\\\\Robotic_Injection_Device:*)"
+    ]
+  }
+}
