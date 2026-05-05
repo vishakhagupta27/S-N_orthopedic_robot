@@ -1,6 +1,7 @@
 // STD
 #include <iostream>
 #include <vector>
+#include <omp.h>
 
 #include <fmt/format.h>
 
@@ -90,6 +91,10 @@ int main(int argc, char* argv[])
   po.set_min_num_pos_args(3);
 
   po.add_backend_flags();
+  po.add("parallel,p", ProgOpts::kSTORE_TRUE, po.get("parallel"), 
+         "Enable parallel processing of experiments (default: false)");
+  po.add("num-threads,t", ProgOpts::kSTORE_INT, 1,
+         "Number of threads for parallel processing (default: auto)");
 
   try
   {
@@ -111,6 +116,19 @@ int main(int argc, char* argv[])
 
   const bool verbose = po.get("verbose");
   std::ostream& vout = po.vout();
+
+  // Performance options
+  const bool enable_parallel = po.get("parallel");
+  int num_threads = po.get("num-threads");
+
+  // Set up OpenMP
+  if (enable_parallel) {
+    if (num_threads <= 0) {
+      num_threads = omp_get_num_procs();
+    }
+    omp_set_num_threads(num_threads);
+    vout << fmt::format("Parallel processing enabled with {} threads\n", num_threads);
+  }
 
   const std::string root_debug_path      = po.pos_args()[0]; // Debug root path to save pnp handeye result
   const std::string root_slicer_path     = po.pos_args()[1]; // Slicer root path
@@ -168,20 +186,30 @@ int main(int argc, char* argv[])
 
   if(lineNumber!=exp_ID_list.size()) throw std::runtime_error("Exp ID list size mismatch!!!");
 
+  vout << fmt::format("Processing {} experiments...\n", lineNumber);
+
+  // Use vectors that thread-safe for frame collection
+  std::vector<vctFrm4x4> A_frames(lineNumber);
+  std::vector<vctFrm4x4> B_frames(lineNumber);
+  std::vector<std::string> processed_exp_ids(lineNumber);
+
+  // Process experiments in parallel or sequential
+  #pragma omp parallel for schedule(dynamic) if(enable_parallel) collapse(1)
   for(int idx=0; idx<lineNumber; ++idx)
   {
-    const std::string exp_ID                  = exp_ID_list[idx];
+    const std::string exp_ID = exp_ID_list[idx];
+    processed_exp_ids[idx] = exp_ID;
 
     // Read Robot End Effector transformation from h5_slicer file
-    const std::string src_ureef_path          = root_slicer_path + "/" + exp_ID + "/ur_eef.h5";
+    const std::string src_ureef_path = root_slicer_path + "/" + exp_ID + "/ur_eef.h5";
     H5::H5File h5_ureef(src_ureef_path, H5F_ACC_RDWR);
-    H5::Group ureef_transform_group           = h5_ureef.openGroup("TransformGroup");
-    H5::Group ureef_group0                    = ureef_transform_group.openGroup("0");
-    std::vector<float> UReef_tracker          = ReadVectorH5Float("TranformParameters", ureef_group0);
+    H5::Group ureef_transform_group = h5_ureef.openGroup("TransformGroup");
+    H5::Group ureef_group0 = ureef_transform_group.openGroup("0");
+    std::vector<float> UReef_tracker = ReadVectorH5Float("TranformParameters", ureef_group0);
 
-    FrameTransform UReef_xform                = ConvertSlicerToITK(UReef_tracker);
+    FrameTransform UReef_xform = ConvertSlicerToITK(UReef_tracker);
 
-    const std::string src_pnp_path            = root_pnp_path + "/devicepnp_xform" + exp_ID + ".h5";
+    const std::string src_pnp_path = root_pnp_path + "/devicepnp_xform" + exp_ID + ".h5";
     FrameTransform pnp_xform = ReadITKAffineTransformFromFile(src_pnp_path);
 
     FrameTransform device_cam_to_ref = device_rotcen_ref * pnp_xform;
@@ -190,23 +218,26 @@ int main(int argc, char* argv[])
     vctFrm4x4 A_frame;
     vctFrm4x4 B_frame;
 
-    for(size_type idx=0; idx<4; ++idx)
+    for(size_type idx_col=0; idx_col<4; ++idx_col)
     {
-      for(size_type idy=0; idy<4; ++idy)
+      for(size_type idy_col=0; idy_col<4; ++idy_col)
       {
-        A_frame[idx][idy] = UReef_xform(idx, idy);
-        B_frame[idx][idy] = device_ref_to_cam(idx, idy);
+        A_frame[idx_col][idy_col] = UReef_xform(idx_col, idy_col);
+        B_frame[idx_col][idy_col] = device_ref_to_cam(idx_col, idy_col);
       }
     }
 
+    A_frames[idx] = A_frame;
+    B_frames[idx] = B_frame;
 
-    std::cout << exp_ID << std::endl;
-    std::cout << "A frame:\n" << A_frame << std::endl;
-    std::cout << "B frame:\n" << B_frame << std::endl;
-    std::cout << " ***************************************** " << std::endl;
-
-    A_frames.push_back(A_frame);
-    B_frames.push_back(B_frame);
+    if (verbose) {
+      #pragma omp critical
+      {
+        std::cout << fmt::format("Processed: {}\n", exp_ID);
+        std::cout << fmt::format("  A frame determinant: {:.6f}\n", A_frame.det());
+        std::cout << fmt::format("  B frame determinant: {:.6f}\n", B_frame.det());
+      }
+    }
   }
 
   if(A_frames.size() <= 5){
@@ -226,30 +257,24 @@ int main(int argc, char* argv[])
   AY.Ref(4, 4, 0, 0).Assign(vctDoubleMat(vctFrm4x4()));
   BY.Ref(4, 4, 0, 0).Assign(vctDoubleMat(vctFrm4x4()));
 
-  /*
-  // precalculate inverse to solve for X
-  vctFrm4x4 AInv = A_frames[0].Inverse();
-  vctFrm4x4 BInv = B_frames[0].Inverse();
+  // Cache inverse matrices to avoid redundant computation
+  std::vector<vctFrm4x4> A_inverses(A_frames.size());
+  std::vector<vctFrm4x4> B_inverses(B_frames.size());
 
-  for (unsigned int i=1; i<A_frames.size(); i++) {
-    AX.Ref(4, 4, 4*i, 0).Assign ( vctDoubleMat (AInv * A_frames[i]));
-    BX.Ref(4, 4, 4*i, 0).Assign ( vctDoubleMat (BInv * B_frames[i]));
-    AY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(A_frames[0]*A_frames[i].Inverse()));
-    BY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(B_frames[0]*B_frames[i].Inverse()));
+  vout << "Pre-computing matrix inverses for caching...\n";
+  #pragma omp parallel for if(enable_parallel) schedule(static)
+  for (unsigned int i=0; i<A_frames.size(); i++) {
+    A_inverses[i] = A_frames[i].Inverse();
+    B_inverses[i] = B_frames[i].Inverse();
   }
-   */
 
-  // precalculate inverse to solve for X
-  vctFrm4x4 AInv = A_frames[0].Inverse();
-  vctFrm4x4 BInv = B_frames[0].Inverse();
-
+  // Use cached inverses to populate matrices (faster than recomputing)
+  #pragma omp parallel for if(enable_parallel) schedule(static)
   for (unsigned int i=1; i<A_frames.size(); i++) {
-    AInv = A_frames[i-1].Inverse();
-    BInv = B_frames[i-1].Inverse();
-    AX.Ref(4, 4, 4*i, 0).Assign ( vctDoubleMat (AInv * A_frames[i]));
-    BX.Ref(4, 4, 4*i, 0).Assign ( vctDoubleMat (BInv * B_frames[i]));
-    AY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(A_frames[i-1]*A_frames[i].Inverse()));
-    BY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(B_frames[i-1]*B_frames[i].Inverse()));
+    AX.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(A_inverses[i-1] * A_frames[i]));
+    BX.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(B_inverses[i-1] * B_frames[i]));
+    AY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(A_frames[i-1] * A_inverses[i]));
+    BY.Ref(4, 4, 4*i, 0).Assign(vctDoubleMat(B_frames[i-1] * B_inverses[i]));
   }
 
   vctFrm4x4 X, Y;
