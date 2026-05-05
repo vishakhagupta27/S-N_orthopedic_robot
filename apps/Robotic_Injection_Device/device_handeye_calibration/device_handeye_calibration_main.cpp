@@ -1,7 +1,6 @@
 // STD
 #include <iostream>
 #include <vector>
-#include <chrono>
 #include <omp.h>
 
 #include <fmt/format.h>
@@ -96,8 +95,6 @@ int main(int argc, char* argv[])
          "Enable parallel processing of experiments (default: false)");
   po.add("num-threads,t", ProgOpts::kSTORE_INT, 1,
          "Number of threads for parallel processing (default: auto)");
-  po.add("show-progress", ProgOpts::kSTORE_TRUE, po.get("show_progress"),
-         "Show progress bar during processing (default: false)");
 
   try
   {
@@ -123,8 +120,7 @@ int main(int argc, char* argv[])
   // Performance options
   const bool enable_parallel = po.get("parallel");
   int num_threads = po.get("num-threads");
-  const bool show_progress = po.get("show_progress");
-  
+
   // Set up OpenMP
   if (enable_parallel) {
     if (num_threads <= 0) {
@@ -133,8 +129,6 @@ int main(int argc, char* argv[])
     omp_set_num_threads(num_threads);
     vout << fmt::format("Parallel processing enabled with {} threads\n", num_threads);
   }
-
-  auto start_time = std::chrono::high_resolution_clock::now();
 
   const std::string root_debug_path      = po.pos_args()[0]; // Debug root path to save pnp handeye result
   const std::string root_slicer_path     = po.pos_args()[1]; // Slicer root path
@@ -193,7 +187,6 @@ int main(int argc, char* argv[])
   if(lineNumber!=exp_ID_list.size()) throw std::runtime_error("Exp ID list size mismatch!!!");
 
   vout << fmt::format("Processing {} experiments...\n", lineNumber);
-  auto exp_start = std::chrono::high_resolution_clock::now();
 
   // Use vectors that thread-safe for frame collection
   std::vector<vctFrm4x4> A_frames(lineNumber);
@@ -204,15 +197,6 @@ int main(int argc, char* argv[])
   #pragma omp parallel for schedule(dynamic) if(enable_parallel) collapse(1)
   for(int idx=0; idx<lineNumber; ++idx)
   {
-    // Progress bar (thread-safe with critical section)
-    if (show_progress && idx % std::max(1, lineNumber/10) == 0) {
-      #pragma omp critical
-      {
-        int progress = (idx * 100) / lineNumber;
-        vout << fmt::format("[Progress] {}/{}  ({}%)\n", idx, lineNumber, progress);
-      }
-    }
-
     const std::string exp_ID = exp_ID_list[idx];
     processed_exp_ids[idx] = exp_ID;
 
@@ -256,11 +240,6 @@ int main(int argc, char* argv[])
     }
   }
 
-  auto exp_end = std::chrono::high_resolution_clock::now();
-  auto exp_duration = std::chrono::duration_cast<std::chrono::milliseconds>(exp_end - exp_start);
-  vout << fmt::format("Experiment processing completed in {:.2f}s\n", 
-                      exp_duration.count() / 1000.0);
-
   if(A_frames.size() <= 5){
     std::cerr << "At least 5 frames are required for hand-eye calibration" << std::endl;
     return kEXIT_VAL_BAD_USE;
@@ -279,20 +258,15 @@ int main(int argc, char* argv[])
   BY.Ref(4, 4, 0, 0).Assign(vctDoubleMat(vctFrm4x4()));
 
   // Cache inverse matrices to avoid redundant computation
-  auto mat_start = std::chrono::high_resolution_clock::now();
   std::vector<vctFrm4x4> A_inverses(A_frames.size());
   std::vector<vctFrm4x4> B_inverses(B_frames.size());
-  
+
   vout << "Pre-computing matrix inverses for caching...\n";
   #pragma omp parallel for if(enable_parallel) schedule(static)
   for (unsigned int i=0; i<A_frames.size(); i++) {
     A_inverses[i] = A_frames[i].Inverse();
     B_inverses[i] = B_frames[i].Inverse();
   }
-  
-  auto mat_end = std::chrono::high_resolution_clock::now();
-  auto mat_duration = std::chrono::duration_cast<std::chrono::milliseconds>(mat_end - mat_start);
-  vout << fmt::format("Matrix inversion cache computed in {:.2f}ms\n", mat_duration.count());
 
   // Use cached inverses to populate matrices (faster than recomputing)
   #pragma omp parallel for if(enable_parallel) schedule(static)
@@ -327,20 +301,6 @@ int main(int argc, char* argv[])
   const std::string pnphandeye_Y_file = root_debug_path + "/" + file_prefix + "handeye_pnp_Y.h5";
   WriteITKAffineTransform(pnphandeye_X_file, pnphandeye_X);
   WriteITKAffineTransform(pnphandeye_Y_file, pnphandeye_Y);
-
-  auto end_time = std::chrono::high_resolution_clock::now();
-  auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-  
-  vout << fmt::format("\n{:-^60}\n", " Execution Summary ");
-  vout << fmt::format("Total experiments processed: {}\n", lineNumber);
-  vout << fmt::format("Parallel processing: {}\n", enable_parallel ? "ENABLED" : "DISABLED");
-  if (enable_parallel) {
-    vout << fmt::format("Number of threads: {}\n", omp_get_max_threads());
-  }
-  vout << fmt::format("Total execution time: {:.2f}s\n", total_duration.count() / 1000.0);
-  vout << fmt::format("Average time per experiment: {:.2f}ms\n", 
-                      static_cast<double>(total_duration.count()) / lineNumber);
-  vout << fmt::format("{:-^60}\n", "");
 
   return kEXIT_VAL_SUCCESS;
 }
