@@ -144,19 +144,19 @@ int main(int argc, char* argv[])
 
   FrameTransform device_rotcen_ref = FrameTransform::Identity();
   {
-    auto deviceref_fcsv = deviceref_3dfcsv.find("HandeyeRef");
-    Pt3 device_rotcen_pt;
+    auto DeviceRef_FCSV = deviceref_3dfcsv.find("HandeyeRef");
+    Pt3 P;
 
-    if (deviceref_fcsv != deviceref_3dfcsv.end()){
-      device_rotcen_pt = deviceref_fcsv->second;
+    if (DeviceRef_FCSV != deviceref_3dfcsv.end()){
+      P = DeviceRef_FCSV->second;
     }
     else{
       std::cout << "ERROR: NOT FOUND device REF PT" << std::endl;
     }
 
-    device_rotcen_ref.matrix()(0,3) = -device_rotcen_pt[0];
-    device_rotcen_ref.matrix()(1,3) = -device_rotcen_pt[1];
-    device_rotcen_ref.matrix()(2,3) = -device_rotcen_pt[2];
+    device_rotcen_ref.matrix()(0,3) = -P[0];
+    device_rotcen_ref.matrix()(1,3) = -P[0];
+    device_rotcen_ref.matrix()(2,3) = -P[2];
   }
 
   const auto default_cam = NaiveCamModelFromCIOSFusion(
@@ -165,8 +165,8 @@ int main(int argc, char* argv[])
   std::vector <vctFrm4x4> A_frames;    //< Transformation of A frames
   std::vector <vctFrm4x4> B_frames;    //< Transformation of B frames
 
-  std::vector<std::string> exp_ID_list;
-  int lineNumber = 0;
+  std::vector<std::string> EXPidLIST;
+  int lineNUMBER = 0;
   /* Read exp ID list from file */
   {
     std::ifstream expIDFile(exp_list_path);
@@ -178,26 +178,26 @@ int main(int argc, char* argv[])
     while(std::getline(expIDFile, line)){
       std::istringstream myline(line);
       while(getline(myline, csvItem)){
-          exp_ID_list.push_back(csvItem);
+          EXPidLIST.push_back(csvItem);
       }
-      lineNumber++;
+      lineNUMBER++;
     }
   }
 
-  if(lineNumber!=exp_ID_list.size()) throw std::runtime_error("Exp ID list size mismatch!!!");
+  if(lineNUMBER!=EXPidLIST.size()) throw std::runtime_error("Exp ID list size mismatch!!!");
 
-  vout << fmt::format("Processing {} experiments...\n", lineNumber);
+  vout << fmt::format("Processing {} experiments...\n", lineNUMBER);
 
   // Use vectors that thread-safe for frame collection
-  std::vector<vctFrm4x4> A_frames(lineNumber);
-  std::vector<vctFrm4x4> B_frames(lineNumber);
-  std::vector<std::string> processed_exp_ids(lineNumber);
+  std::vector<vctFrm4x4> A_frames(lineNUMBER);
+  std::vector<vctFrm4x4> B_frames(lineNUMBER);
+  std::vector<std::string> processed_exp_ids(lineNUMBER);
 
   // Process experiments in parallel or sequential
   #pragma omp parallel for schedule(dynamic) if(enable_parallel) collapse(1)
-  for(int idx=0; idx<lineNumber; ++idx)
+  for(int idx=0; idx<lineNUMBER; ++idx)
   {
-    const std::string exp_ID = exp_ID_list[idx];
+    const std::string exp_ID = EXPidLIST[idx];
     processed_exp_ids[idx] = exp_ID;
 
     // Read Robot End Effector transformation from h5_slicer file
@@ -223,7 +223,7 @@ int main(int argc, char* argv[])
       for(size_type idy_col=0; idy_col<4; ++idy_col)
       {
         A_frame[idx_col][idy_col] = UReef_xform(idx_col, idy_col);
-        B_frame[idx_col][idy_col] = device_ref_to_cam(idx_col, idy_col);
+        B_frame[idx_col][idy_col] = device_ref_to_cam(idx_col, idx_col);
       }
     }
 
