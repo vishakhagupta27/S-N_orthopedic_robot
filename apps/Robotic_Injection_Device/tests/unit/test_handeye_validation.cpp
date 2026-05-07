@@ -61,6 +61,30 @@ protected:
         return (t1 - t2).norm();
     }
 
+    double ComputeQualityScore(double mean_residual, double max_residual) {
+        double score = 100.0 - (25.0 * mean_residual) - (10.0 * max_residual);
+        if (score < 0.0) {
+            score = 0.0;
+        }
+        if (score > 100.0) {
+            score = 100.0;
+        }
+        return score;
+    }
+
+    std::string ComputeQualityGrade(double quality_score) {
+        if (quality_score >= 90.0) {
+            return "A";
+        }
+        if (quality_score >= 75.0) {
+            return "B";
+        }
+        if (quality_score >= 60.0) {
+            return "C";
+        }
+        return "D";
+    }
+
     FrameTransform true_X_;
     std::vector<FrameTransform> robot_poses_;
     std::vector<FrameTransform> device_poses_;
@@ -278,4 +302,40 @@ TEST_F(HandEyeValidationTest, ReconstructionAccuracy) {
 
         EXPECT_LT(error, 1e-10) << "Reconstruction error for pose " << i;
     }
+}
+
+// FR-HEC-010: Quality score should stay in [0, 100]
+TEST_F(HandEyeValidationTest, QualityScoreClampedRange) {
+    double high_quality = ComputeQualityScore(0.05, 0.10);
+    double low_quality = ComputeQualityScore(10.0, 15.0);
+
+    EXPECT_GE(high_quality, 0.0);
+    EXPECT_LE(high_quality, 100.0);
+    EXPECT_GE(low_quality, 0.0);
+    EXPECT_LE(low_quality, 100.0);
+}
+
+// FR-HEC-010: Better residuals should produce higher quality score
+TEST_F(HandEyeValidationTest, BetterResidualsProduceHigherQualityScore) {
+    double better = ComputeQualityScore(0.1, 0.2);
+    double worse = ComputeQualityScore(0.8, 1.2);
+
+    EXPECT_GT(better, worse);
+}
+
+// FR-HEC-010: Grade mapping should follow score thresholds
+TEST_F(HandEyeValidationTest, QualityGradeThresholdMapping) {
+    EXPECT_EQ(ComputeQualityGrade(95.0), "A");
+    EXPECT_EQ(ComputeQualityGrade(80.0), "B");
+    EXPECT_EQ(ComputeQualityGrade(62.0), "C");
+    EXPECT_EQ(ComputeQualityGrade(40.0), "D");
+}
+
+// FR-HEC-010: PASS quality requires score >= 70
+TEST_F(HandEyeValidationTest, QualityPassThreshold) {
+    double passing_score = ComputeQualityScore(0.4, 0.8);
+    double failing_score = ComputeQualityScore(1.5, 2.0);
+
+    EXPECT_GE(passing_score, 70.0);
+    EXPECT_LT(failing_score, 70.0);
 }
