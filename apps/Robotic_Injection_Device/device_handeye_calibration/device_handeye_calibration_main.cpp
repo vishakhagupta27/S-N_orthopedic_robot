@@ -459,16 +459,16 @@ int main(int argc, char* argv[])
   for (size_type i = 0; i < A_frames_eigen.size(); ++i)
   {
     const FrameTransform AX = A_frames_eigen[i] * pnphandeye_X;
-    const FrameTransform XB = pnphandeye_X * B_frames_eigen[i];
+    const FrameTransform XB = pnphandeye_X * B_frames_eigen[0];
     const double residual = (AX - XB).norm();
     residual_sum += residual;
     residual_max = std::max(residual_max, residual);
   }
 
-  const double mean_residual = residual_sum / static_cast<double>(A_frames_eigen.size());
+  const double mean_residual = residual_sum / static_cast<double>(A_frames_eigen.size() - 1);
   const double quality_score = ComputeQualityScore(mean_residual, residual_max);
   const std::string quality_grade = ComputeQualityGrade(quality_score);
-  const bool quality_pass = quality_score >= 70.0;
+  const bool quality_pass = quality_score >= 95.0;
 
   std::cout << "==================== QUALITY SCORE ======================" << std::endl;
   std::cout << "Mean residual: " << mean_residual << std::endl;
