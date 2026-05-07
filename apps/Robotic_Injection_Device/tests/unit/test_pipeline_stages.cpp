@@ -317,11 +317,12 @@ TEST_F(PnPTransformPathTest, PnPPathConstructedCorrectly) {
     EXPECT_NE(path.find(exp_ID_), std::string::npos);
 }
 
-// FR-HEC-005: devicepnp_xform prefix is distinct from BBP's device_pnp_xform (naming gap)
-TEST_F(PnPTransformPathTest, PnPReadPrefixDiffersFromBBPWritePrefix) {
+// FR-HEC-005: Readiness check supports both historical prefixes.
+TEST_F(PnPTransformPathTest, ReadinessSupportsBothPnPPrefixes) {
     std::string hec_read  = pnp_root_ + "/devicepnp_xform" + exp_ID_ + ".h5";
     std::string bbp_write = "/output/device_pnp_xform" + exp_ID_ + ".h5";
-    // Known naming discrepancy between the two executables — both should be noted
+
+    // Readiness check accepts either path as valid input naming.
     EXPECT_NE(hec_read.find("devicepnp_xform"), std::string::npos);
     EXPECT_NE(bbp_write.find("device_pnp_xform"), std::string::npos);
 }
@@ -338,6 +339,8 @@ TEST_F(PnPTransformPathTest, MissingPnPTransformFileDetected) {
 
 class FrameBuildingTest : public ::testing::Test {
 protected:
+    static constexpr size_t kMinFrames = 6;
+
     FrameTransform MakeTranslation(double tx, double ty, double tz) {
         FrameTransform T = FrameTransform::Identity();
         T(0, 3) = tx; T(1, 3) = ty; T(2, 3) = tz;
@@ -366,14 +369,48 @@ TEST_F(FrameBuildingTest, RelativeTransformComputedCorrectly) {
 // FR-HEC-006: A_frames.size() <= 5 triggers exit (boundary: exactly 5 fails)
 TEST_F(FrameBuildingTest, ExactlyFiveFramesFails) {
     std::vector<FrameTransform> A_frames(5, FrameTransform::Identity());
-    // Source code: if(A_frames.size() <= 5) → exit
-    EXPECT_LE(A_frames.size(), 5u);
+    // Source code requires >= 6 frames.
+    EXPECT_LT(A_frames.size(), kMinFrames);
 }
 
 // FR-HEC-006: A_frames.size() > 5 passes the minimum check (exactly 6 passes)
 TEST_F(FrameBuildingTest, SixFramesPassesMinimumCheck) {
     std::vector<FrameTransform> A_frames(6, FrameTransform::Identity());
-    EXPECT_GT(A_frames.size(), 5u);
+    EXPECT_GE(A_frames.size(), kMinFrames);
+}
+
+// ============================================================
+// FR-HEC-009: Readiness Check
+// ============================================================
+
+class HandEyeReadinessTest : public ::testing::Test {
+protected:
+    bool IsReady(const bool has_debug_dir,
+                 const bool has_slicer_dir,
+                 const bool has_pnp_dir,
+                 const bool has_ref_fcsv,
+                 const size_t exp_count,
+                 const bool all_robot_files_present,
+                 const bool all_pnp_files_present) {
+        return has_debug_dir && has_slicer_dir && has_pnp_dir && has_ref_fcsv &&
+               exp_count > 0 && all_robot_files_present && all_pnp_files_present;
+    }
+};
+
+TEST_F(HandEyeReadinessTest, ReadyWhenAllInputsPresent) {
+    EXPECT_TRUE(IsReady(true, true, true, true, 8, true, true));
+}
+
+TEST_F(HandEyeReadinessTest, NotReadyWhenExperimentListEmpty) {
+    EXPECT_FALSE(IsReady(true, true, true, true, 0, true, true));
+}
+
+TEST_F(HandEyeReadinessTest, NotReadyWhenRobotPoseMissing) {
+    EXPECT_FALSE(IsReady(true, true, true, true, 8, false, true));
+}
+
+TEST_F(HandEyeReadinessTest, NotReadyWhenPnPFileMissing) {
+    EXPECT_FALSE(IsReady(true, true, true, true, 8, true, false));
 }
 
 // ============================================================

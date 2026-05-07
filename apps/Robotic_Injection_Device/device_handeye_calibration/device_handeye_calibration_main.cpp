@@ -1,6 +1,12 @@
 // STD
 #include <iostream>
 #include <vector>
+#include <fstream>
+#include <sstream>
+#include <set>
+#include <limits>
+#include <filesystem>
+#include <algorithm>
 
 #include <fmt/format.h>
 
@@ -38,6 +44,7 @@
 
 
 using namespace xreg;
+namespace fs = std::filesystem;
 
 constexpr int kEXIT_VAL_SUCCESS = 0;
 constexpr int kEXIT_VAL_BAD_USE = 1;
@@ -46,6 +53,149 @@ using size_type = std::size_t;
 
 using Pt3         = Eigen::Matrix<CoordScalar,3,1>;
 using Pt2         = Eigen::Matrix<CoordScalar,2,1>;
+
+constexpr size_type kMIN_NUM_FRAMES = 6;
+
+struct ReadinessCheckResult
+{
+  bool ready = true;
+  std::vector<std::string> errors;
+  std::vector<std::string> warnings;
+};
+
+inline bool PathExists(const std::string& path)
+{
+  std::error_code ec;
+  return fs::exists(fs::path(path), ec);
+}
+
+inline bool IsDirectoryPath(const std::string& path)
+{
+  std::error_code ec;
+  return fs::is_directory(fs::path(path), ec);
+}
+
+std::vector<std::string> ReadExperimentIDs(const std::string& exp_list_path)
+{
+  std::vector<std::string> exp_ID_list;
+
+  std::ifstream expIDFile(exp_list_path);
+  if (!expIDFile.is_open())
+  {
+    throw std::runtime_error("Could not open exp ID file: " + exp_list_path);
+  }
+
+  std::string line;
+  while (std::getline(expIDFile, line))
+  {
+    if (!line.empty())
+    {
+      exp_ID_list.push_back(line);
+    }
+  }
+
+  return exp_ID_list;
+}
+
+std::string ResolvePnPPath(const std::string& root_pnp_path, const std::string& exp_ID)
+{
+  const std::string path_without_underscore = root_pnp_path + "/devicepnp_xform" + exp_ID + ".h5";
+  if (PathExists(path_without_underscore))
+  {
+    return path_without_underscore;
+  }
+
+  const std::string path_with_underscore = root_pnp_path + "/device_pnp_xform" + exp_ID + ".h5";
+  if (PathExists(path_with_underscore))
+  {
+    return path_with_underscore;
+  }
+
+  return "";
+}
+
+ReadinessCheckResult RunReadinessCheck(const std::string& root_debug_path,
+                                       const std::string& root_slicer_path,
+                                       const std::string& root_pnp_path,
+                                       const std::string& deviceref_fcsv_path,
+                                       const std::vector<std::string>& exp_ID_list)
+{
+  ReadinessCheckResult result;
+
+  if (!PathExists(root_debug_path) || !IsDirectoryPath(root_debug_path))
+  {
+    result.errors.emplace_back("Debug output directory missing: " + root_debug_path);
+  }
+
+  if (!PathExists(root_slicer_path) || !IsDirectoryPath(root_slicer_path))
+  {
+    result.errors.emplace_back("Slicer root directory missing: " + root_slicer_path);
+  }
+
+  if (!PathExists(root_pnp_path) || !IsDirectoryPath(root_pnp_path))
+  {
+    result.errors.emplace_back("PnP root directory missing: " + root_pnp_path);
+  }
+
+  if (!PathExists(deviceref_fcsv_path))
+  {
+    result.errors.emplace_back("Device reference FCSV missing: " + deviceref_fcsv_path);
+  }
+
+  if (exp_ID_list.empty())
+  {
+    result.errors.emplace_back("Experiment ID list is empty.");
+  }
+
+  std::set<std::string> unique_ids;
+  for (const auto& exp_id : exp_ID_list)
+  {
+    if (!unique_ids.insert(exp_id).second)
+    {
+      result.warnings.emplace_back("Duplicate experiment ID found: " + exp_id);
+    }
+
+    const std::string src_ureef_path = root_slicer_path + "/" + exp_id + "/ur_eef.h5";
+    if (!PathExists(src_ureef_path))
+    {
+      result.errors.emplace_back("Missing robot pose file: " + src_ureef_path);
+    }
+
+    const std::string pnp_path = ResolvePnPPath(root_pnp_path, exp_id);
+    if (pnp_path.empty())
+    {
+      result.errors.emplace_back("Missing PnP transform file for exp " + exp_id +
+                                 " (checked devicepnp_xform*.h5 and device_pnp_xform*.h5)");
+    }
+  }
+
+  result.ready = result.errors.empty();
+  return result;
+}
+
+double ComputeQualityScore(double mean_residual, double max_residual)
+{
+  // Lower residuals produce higher scores. Coefficients chosen for intuitive 0-100 scaling.
+  const double raw_score = 100.0 - (25.0 * mean_residual) - (10.0 * max_residual);
+  return std::clamp(raw_score, 0.0, 100.0);
+}
+
+std::string ComputeQualityGrade(const double quality_score)
+{
+  if (quality_score >= 90.0)
+  {
+    return "A";
+  }
+  if (quality_score >= 75.0)
+  {
+    return "B";
+  }
+  if (quality_score >= 60.0)
+  {
+    return "C";
+  }
+  return "D";
+}
 
 FrameTransform ConvertSlicerToITK(std::vector<float> slicer_vec){
   FrameTransform RAS2LPS;
@@ -86,8 +236,8 @@ int main(int argc, char* argv[])
   xregPROG_OPTS_SET_COMPILE_DATE(po);
 
   po.set_help("Compute 3D Polaris Position of Snake Tip Jig");
-  po.set_arg_usage("<root regi debug H5 file source path> <root slicer H5 file source path> <exp ID file>");
-  po.set_min_num_pos_args(3);
+  po.set_arg_usage("<root regi debug H5 file source path> <root slicer H5 file source path> <root pnp H5 path> <device ref fcsv path> <exp ID file> <output file prefix>");
+  po.set_min_num_pos_args(6);
 
   po.add_backend_flags();
 
@@ -112,12 +262,50 @@ int main(int argc, char* argv[])
   const bool verbose = po.get("verbose");
   std::ostream& vout = po.vout();
 
+  if (po.pos_args().size() != 6)
+  {
+    std::cerr << "Expected exactly 6 positional arguments, got " << po.pos_args().size() << std::endl;
+    po.print_usage(std::cerr);
+    return kEXIT_VAL_BAD_USE;
+  }
+
   const std::string root_debug_path      = po.pos_args()[0]; // Debug root path to save pnp handeye result
   const std::string root_slicer_path     = po.pos_args()[1]; // Slicer root path
   const std::string root_pnp_path        = po.pos_args()[2]; // Pnp xform root path
   const std::string deviceref_fcsv_path   = po.pos_args()[3];  // 3D device rotation center landmark path
   const std::string exp_list_path        = po.pos_args()[4]; // Source exp list file
   const std::string file_prefix          = po.pos_args()[5]; // Handeye result save prefix
+
+  std::vector<std::string> exp_ID_list = ReadExperimentIDs(exp_list_path);
+
+  auto readiness = RunReadinessCheck(root_debug_path, root_slicer_path, root_pnp_path,
+                                     deviceref_fcsv_path, exp_ID_list);
+
+  std::cout << "==================== READINESS CHECK ====================" << std::endl;
+  std::cout << "Status: " << (readiness.ready ? "READY" : "NOT READY") << std::endl;
+  std::cout << "Experiments found: " << exp_ID_list.size() << std::endl;
+  if (!readiness.warnings.empty())
+  {
+    std::cout << "Warnings:" << std::endl;
+    for (const auto& warning : readiness.warnings)
+    {
+      std::cout << "  - " << warning << std::endl;
+    }
+  }
+  if (!readiness.errors.empty())
+  {
+    std::cout << "Errors:" << std::endl;
+    for (const auto& error : readiness.errors)
+    {
+      std::cout << "  - " << error << std::endl;
+    }
+  }
+  std::cout << "=========================================================" << std::endl;
+
+  if (!readiness.ready)
+  {
+    return kEXIT_VAL_BAD_USE;
+  }
 
   std::cout << "reading device rotation center ref landmark from FCSV file..." << std::endl;
   auto deviceref_3dfcsv = ReadFCSVFileNamePtMap(deviceref_fcsv_path);
@@ -147,28 +335,10 @@ int main(int argc, char* argv[])
   std::vector <vctFrm4x4> A_frames;    //< Transformation of A frames
   std::vector <vctFrm4x4> B_frames;    //< Transformation of B frames
 
-  std::vector<std::string> exp_ID_list;
-  int lineNumber = 0;
-  /* Read exp ID list from file */
-  {
-    std::ifstream expIDFile(exp_list_path);
-    // Make sure the file is open
-    if(!expIDFile.is_open()) throw std::runtime_error("Could not open exp ID file");
+  std::vector<FrameTransform> A_frames_eigen;
+  std::vector<FrameTransform> B_frames_eigen;
 
-    std::string line, csvItem;
-
-    while(std::getline(expIDFile, line)){
-      std::istringstream myline(line);
-      while(getline(myline, csvItem)){
-          exp_ID_list.push_back(csvItem);
-      }
-      lineNumber++;
-    }
-  }
-
-  if(lineNumber!=exp_ID_list.size()) throw std::runtime_error("Exp ID list size mismatch!!!");
-
-  for(int idx=0; idx<lineNumber; ++idx)
+  for(size_type idx=0; idx<exp_ID_list.size(); ++idx)
   {
     const std::string exp_ID                  = exp_ID_list[idx];
 
@@ -181,7 +351,11 @@ int main(int argc, char* argv[])
 
     FrameTransform UReef_xform                = ConvertSlicerToITK(UReef_tracker);
 
-    const std::string src_pnp_path            = root_pnp_path + "/devicepnp_xform" + exp_ID + ".h5";
+    const std::string src_pnp_path            = ResolvePnPPath(root_pnp_path, exp_ID);
+    if (src_pnp_path.empty())
+    {
+      throw std::runtime_error("PnP transform file missing after readiness check for experiment: " + exp_ID);
+    }
     FrameTransform pnp_xform = ReadITKAffineTransformFromFile(src_pnp_path);
 
     FrameTransform device_cam_to_ref = device_rotcen_ref * pnp_xform;
@@ -207,10 +381,12 @@ int main(int argc, char* argv[])
 
     A_frames.push_back(A_frame);
     B_frames.push_back(B_frame);
+    A_frames_eigen.push_back(UReef_xform);
+    B_frames_eigen.push_back(device_ref_to_cam);
   }
 
-  if(A_frames.size() <= 5){
-    std::cerr << "At least 5 frames are required for hand-eye calibration" << std::endl;
+  if(A_frames.size() < kMIN_NUM_FRAMES){
+    std::cerr << "At least " << kMIN_NUM_FRAMES << " frames are required for hand-eye calibration" << std::endl;
     return kEXIT_VAL_BAD_USE;
   }
 
@@ -276,6 +452,46 @@ int main(int argc, char* argv[])
   const std::string pnphandeye_Y_file = root_debug_path + "/" + file_prefix + "handeye_pnp_Y.h5";
   WriteITKAffineTransform(pnphandeye_X_file, pnphandeye_X);
   WriteITKAffineTransform(pnphandeye_Y_file, pnphandeye_Y);
+
+  // Quality score based on calibration residuals: ||A_i X - X B_i||
+  double residual_sum = 0.0;
+  double residual_max = 0.0;
+  for (size_type i = 0; i < A_frames_eigen.size(); ++i)
+  {
+    const FrameTransform AX = A_frames_eigen[i] * pnphandeye_X;
+    const FrameTransform XB = pnphandeye_X * B_frames_eigen[0];
+    const double residual = (AX - XB).norm();
+    residual_sum += residual;
+    residual_max = std::max(residual_max, residual);
+  }
+
+  const double mean_residual = residual_sum / static_cast<double>(A_frames_eigen.size() - 1);
+  const double quality_score = ComputeQualityScore(mean_residual, residual_max);
+  const std::string quality_grade = ComputeQualityGrade(quality_score);
+  const bool quality_pass = quality_score >= 95.0;
+
+  std::cout << "==================== QUALITY SCORE ======================" << std::endl;
+  std::cout << "Mean residual: " << mean_residual << std::endl;
+  std::cout << "Max residual : " << residual_max << std::endl;
+  std::cout << "Score        : " << quality_score << "/100" << std::endl;
+  std::cout << "Grade        : " << quality_grade << std::endl;
+  std::cout << "Status       : " << (quality_pass ? "PASS" : "FAIL") << std::endl;
+  std::cout << "=========================================================" << std::endl;
+
+  const std::string quality_report_path = root_debug_path + "/" + file_prefix + "handeye_quality_report.txt";
+  std::ofstream quality_report(quality_report_path);
+  if (quality_report.is_open())
+  {
+    quality_report << "mean_residual=" << mean_residual << "\n";
+    quality_report << "max_residual=" << residual_max << "\n";
+    quality_report << "quality_score=" << quality_score << "\n";
+    quality_report << "quality_grade=" << quality_grade << "\n";
+    quality_report << "quality_status=" << (quality_pass ? "PASS" : "FAIL") << "\n";
+  }
+  else
+  {
+    std::cerr << "Warning: Unable to write quality report: " << quality_report_path << std::endl;
+  }
 
   return kEXIT_VAL_SUCCESS;
 }

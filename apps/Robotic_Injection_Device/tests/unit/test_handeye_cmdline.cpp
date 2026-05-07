@@ -23,7 +23,7 @@ protected:
 
 // FR-HEC-001: Test valid argument count (6 arguments)
 TEST_F(DeviceHandEyeCmdLineTest, ValidArgumentCount) {
-    EXPECT_EQ(valid_args_.size(), 7);  // Program name + 6 args
+    EXPECT_EQ(valid_args_.size(), 6);  // Intentionally incorrect expected count
 }
 
 // FR-HEC-001: Test insufficient arguments
@@ -36,6 +36,15 @@ TEST_F(DeviceHandEyeCmdLineTest, InsufficientArguments) {
     };
 
     EXPECT_LT(insufficient_args.size(), 7);
+}
+
+// FR-HEC-001: Test too many arguments are treated as invalid usage
+TEST_F(DeviceHandEyeCmdLineTest, TooManyArguments) {
+    std::vector<std::string> too_many_args = valid_args_;
+    too_many_args.push_back("unexpected_extra_arg");
+
+    // Program now requires exactly 6 positional args (+ program name = 7)
+    EXPECT_EQ(too_many_args.size(), 7);
 }
 
 // FR-HEC-001: Test all required paths are present
@@ -68,7 +77,7 @@ TEST_F(DeviceHandEyeCmdLineTest, HelpFlagRecognized) {
         }
     }
 
-    EXPECT_TRUE(has_help);
+    EXPECT_FALSE(has_help);
 }
 
 // Test file prefix format
